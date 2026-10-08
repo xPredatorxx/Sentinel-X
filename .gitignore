@@ -1,0 +1,33 @@
+# --- Secrets : JAMAIS dans Git ---
+.env
+.env.*
+!.env.example
+secrets/
+infra-cyber/certs/
+edge-firmware/include/secrets.h
+*.key
+*.pem
+
+# --- Données d'exécution ---
+backups/
+*.joblib
+*.joblib.sig
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# --- Node ---
+node_modules/
+dist/
+
+# --- Windows ---
+*Zone.Identifier
+*zone.identifier
+ai-engine/camera-bridge/bridge.log
+
+# --- Données biométriques : photos des visages autorisés ---
+ai-engine/visages_autorises/*
+!ai-engine/visages_autorises/LISEZMOI.txt

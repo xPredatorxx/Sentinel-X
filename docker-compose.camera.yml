@@ -1,0 +1,12 @@
+# Surcouche "webcam" (hôte Linux uniquement : Docker Desktop sous Windows ne transmet pas l'USB).
+# Seul le périphérique vidéo nécessaire est monté, rien d'autre (pas de privileged, pas de /dev entier).
+#   docker compose -f docker-compose.yml -f docker-compose.camera.yml up -d
+services:
+  ai:
+    devices:
+      - "${CAMERA_DEVICE:-/dev/video0}:/dev/video0"
+    group_add:
+      - video
+    environment:
+      CAMERA_SOURCE: /dev/video0
+      CAMERA_URL: ""

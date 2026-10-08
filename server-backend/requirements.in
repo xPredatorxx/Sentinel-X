@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+pydantic-settings>=2.0
+aiomqtt>=2.3
+httpx
+pyjwt>=2.10
+argon2-cffi>=23.1
+pandas
+scikit-learn
+joblib

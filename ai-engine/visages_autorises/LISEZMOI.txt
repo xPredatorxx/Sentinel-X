@@ -1,0 +1,3 @@
+Déposez ici les photos des personnes autorisées (une par personne, visage net) :
+<prenom>.jpg — puis : docker compose restart ai
+Ces photos sont des données biométriques : elles ne sont jamais versionnées.

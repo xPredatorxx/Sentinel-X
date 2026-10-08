@@ -1,0 +1,19 @@
+# SENTINEL-X — ACL Mosquitto : tout ce qui n'est pas listé ici est REFUSÉ.
+
+# --- API (compte "api") -------------------------------------------------------
+# lit la télémétrie et le statut de tous les boîtiers, n'écrit que des commandes
+user api
+topic read sentinel/+/telemetry
+topic read sentinel/+/status
+topic write sentinel/+/cmd
+
+# --- Boîtiers ESP (un compte par boîtier, %u = nom d'utilisateur = node_id) ------
+# Chaque boîtier n'accède qu'à SES trois topics :
+#   telemetry : publication des mesures       (écriture)
+#   status    : online/offline + accusé cmd   (écriture, retenu, Last Will)
+#   cmd       : réception des commandes       (lecture)
+# Un ESP compromis ne peut donc ni lire les autres boîtiers, ni publier au nom
+# d'un autre node_id, ni s'envoyer des commandes, ni lire $SYS.
+pattern write sentinel/%u/telemetry
+pattern write sentinel/%u/status
+pattern read sentinel/%u/cmd

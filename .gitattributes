@@ -1,0 +1,12 @@
+# Fins de ligne LF pour tout ce qui est exécuté dans les conteneurs Linux
+* text=auto
+*.sh text eol=lf
+*.conf text eol=lf
+*.sha256 text eol=lf
+Dockerfile text eol=lf
+infra-cyber/mosquitto/acl text eol=lf
+*.pt binary
+*.onnx binary
+*.jpg binary
+*.png binary
+*.ps1 text eol=crlf

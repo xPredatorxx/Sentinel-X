@@ -1,0 +1,4 @@
+visages_autorises/
+__pycache__/
+*.pyc
+.venv/

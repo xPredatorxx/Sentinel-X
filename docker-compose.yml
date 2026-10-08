@@ -1,0 +1,224 @@
+# SENTINEL-X — stack serveur
+# Préparation (une fois) :  bash scripts/setup.sh      puis :  docker compose up -d --build
+#
+# Durcissement appliqué à TOUS les conteneurs (bloc x-hardening) :
+#   - utilisateur non-root, aucun conteneur privilégié, aucune capability Linux ;
+#   - no-new-privileges (setuid/setcap inopérants) ;
+#   - système de fichiers racine en lecture seule (écriture uniquement en tmpfs / volumes) ;
+#   - limites mémoire / processus, rotation des journaux, redémarrage automatique.
+# Réseau : "backend" est INTERNE (aucun accès sortant, aucun port publié).
+#   Seuls Nginx (443/80) et Mosquitto (8883) sont joignables depuis le réseau de table.
+#   Base de données, API et IA n'ont AUCUN port sur l'hôte.
+
+name: sentinel
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  privileged: false
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  db:
+    <<: *hardening
+    image: postgres:16-alpine
+    user: "70:70"                      # utilisateur postgres de l'image alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-sentinel}
+      POSTGRES_USER: sentinel_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_root_password
+      APP_DB_USER: ${DB_USER:-sentinel_app}
+    secrets: [db_root_password, db_app_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra-cyber/postgres/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/run/postgresql
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel_admin -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    mem_limit: 512m
+    pids_limit: 200
+
+  mqtt:
+    <<: *hardening
+    image: eclipse-mosquitto:2
+    user: "1883:1883"
+    entrypoint: ["/bin/sh", "/mosquitto/config/entrypoint.sh"]
+    environment:
+      MQTT_EDGE_USER: ${NODE_ID:-sentinel-edge-01}
+    secrets: [mqtt_api_password, mqtt_edge_password]
+    volumes:
+      - ./infra-cyber/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infra-cyber/mosquitto/acl:/mosquitto/config/acl:ro
+      - ./infra-cyber/mosquitto/entrypoint.sh:/mosquitto/config/entrypoint.sh:ro
+      - ./infra-cyber/certs/mqtt.crt:/run/certs/mqtt.crt:ro
+      - ./infra-cyber/certs/mqtt.key:/run/certs/mqtt.key:ro
+      - ./infra-cyber/certs/ca.crt:/run/certs/ca.crt:ro      # certificat public, pour les tests
+    tmpfs:
+      - /tmp
+    ports:
+      # MQTTS uniquement (TLS) : le port 1883 en clair n'existe plus
+      - "${BIND_IP:-0.0.0.0}:8883:8883"
+    healthcheck:
+      # vérification de processus : une sonde TCP sur 8883 polluerait les journaux TLS
+      test: ["CMD-SHELL", "pidof mosquitto"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    networks: [edge, backend]
+    mem_limit: 128m
+    pids_limit: 50
+
+  api:
+    <<: *hardening
+    build: ./server-backend
+    image: sentinel/api:latest
+    environment:
+      DB_NAME: ${DB_NAME:-sentinel}
+      DB_USER: ${DB_USER:-sentinel_app}
+      KNOWN_NODES: ${NODE_ID:-sentinel-edge-01}
+      VISION_NODE_ID: ${VISION_NODE_ID:-sentinel-vision-01}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      VIEWER_USERNAME: ${VIEWER_USERNAME:-operateur}
+      DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
+      ML_CONTAMINATION: ${ML_CONTAMINATION:-0.01}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+    secrets: [db_app_password, mqtt_api_password, ai_api_key, jwt_secret, admin_password, viewer_password]
+    volumes:
+      - mlmodels:/data/models
+      - ./infra-cyber/certs/ca.crt:/run/certs/ca.crt:ro
+    tmpfs:
+      - /tmp
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    networks: [backend]
+    mem_limit: 768m
+    pids_limit: 200
+
+  ai:
+    <<: *hardening
+    build: ./ai-engine
+    image: sentinel/ai:latest
+    environment:
+      NODE_ID: ${VISION_NODE_ID:-sentinel-vision-01}
+      CAMERA_SOURCE: ${CAMERA_SOURCE:-0}
+      # webcam USB externe lue sur Windows par le pont natif, relayée par Nginx (réseau interne)
+      CAMERA_URL: ${CAMERA_URL-http://web:8081/camera/stream}
+      API_URL: http://api:8000/api/v1/alerts
+    secrets: [ai_api_key, camera_token]
+    volumes:
+      - ./ai-engine/visages_autorises:/app/faces:ro
+    tmpfs:
+      - /tmp:size=256m
+    # Aucun périphérique monté : sous Windows, la webcam arrive par le pont caméra natif.
+    # Sous Linux (webcam montée directement) :  docker compose -f docker-compose.yml -f docker-compose.camera.yml up -d
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [backend]
+    mem_limit: 3g
+    pids_limit: 300
+
+  web:
+    <<: *hardening
+    build: ./web-dashboard
+    image: sentinel/web:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # relais vers le pont caméra (127.0.0.1 de l'hôte)
+    volumes:
+      - ./infra-cyber/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra-cyber/nginx/security-headers.conf:/etc/nginx/sentinel/security-headers.conf:ro
+      - ./infra-cyber/nginx/proxy.conf:/etc/nginx/sentinel/proxy.conf:ro
+      - ./infra-cyber/certs/server.crt:/run/certs/server.crt:ro
+      - ./infra-cyber/certs/server.key:/run/certs/server.key:ro
+    tmpfs:
+      - /tmp
+    ports:
+      - "${BIND_IP:-0.0.0.0}:443:8443"
+      - "${BIND_IP:-0.0.0.0}:80:8080"     # redirection vers HTTPS uniquement
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge, backend]
+    mem_limit: 128m
+    pids_limit: 100
+
+  backup:
+    <<: *hardening
+    image: postgres:16-alpine
+    user: "70:70"
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    environment:
+      DB_NAME: ${DB_NAME:-sentinel}
+      DB_USER: ${DB_USER:-sentinel_app}
+      BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-21600}
+      BACKUP_KEEP: ${BACKUP_KEEP:-28}
+    secrets: [db_app_password]
+    volumes:
+      - ./infra-cyber/backup:/scripts:ro
+      - ./backups:/backups
+    tmpfs:
+      - /tmp
+    healthcheck:
+      # en échec si aucune sauvegarde réussie depuis 2 intervalles
+      test: ["CMD-SHELL", "test -f /backups/.last_success && [ $$(( $$(date +%s) - $$(cat /backups/.last_success) )) -lt $$(( 2 * $${BACKUP_INTERVAL_S} + 300 )) ]"]
+      interval: 5m
+      timeout: 5s
+      start_period: 2m
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    mem_limit: 128m
+    pids_limit: 50
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true          # aucun accès Internet ni à l'hôte : isolation des services internes
+
+volumes:
+  pgdata:
+  mlmodels:
+
+secrets:
+  db_root_password:
+    file: ./secrets/db_root_password
+  db_app_password:
+    file: ./secrets/db_app_password
+  mqtt_api_password:
+    file: ./secrets/mqtt_api_password
+  mqtt_edge_password:
+    file: ./secrets/mqtt_edge_password
+  ai_api_key:
+    file: ./secrets/ai_api_key
+  camera_token:
+    file: ./secrets/camera_token
+  jwt_secret:
+    file: ./secrets/jwt_secret
+  admin_password:
+    file: ./secrets/admin_password
+  viewer_password:
+    file: ./secrets/viewer_password

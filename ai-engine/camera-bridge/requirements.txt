@@ -1,0 +1,4 @@
+comtypes==1.4.17
+numpy==2.5.3
+opencv-python-headless==4.14.0.94
+pygrabber==0.2
